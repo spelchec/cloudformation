@@ -1,0 +1,349 @@
+---
+## What I'm building is based on this:
+# https://aws.amazon.com/blogs/compute/nodejs-packages-in-lambda/
+#
+## Some YAML CF notes: http://2ndwatch.com/blog/writing-cloudformation-templates-in-yaml-a-first-look/
+#
+AWSTemplateFormatVersion: "2010-09-09"
+Description: A sample template - version 2017.07.21
+Parameters:
+  FilePath: 
+    Description: The path of the test file.
+    Type: String
+    Default: /home/ec2-user/userdata
+
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance.
+    Type: "AWS::EC2::KeyPair::KeyName"
+    ConstraintDescription: must be the name of an existing EC2 KeyPair.
+  
+  AwsKey:
+    Description: "AWS Key for downloading S3 resources"
+    Type: "String"
+    Default: XXXXXXXXXXXXXXXXXXXX
+
+  AwsSecretKey:
+    Description: "AWS Secret Key for downloading S3 resources"
+    Type: "String"
+    Default: XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+  AwsRegion:
+    Description: "AWS Region"
+    Type: "String"
+    Default: us-east-1
+
+  S3Bucket:
+    Description: "S3 Bucket for node.js files"
+    Type: "String"
+    Default: somebucket
+
+  InstanceType:
+    Description: "WebServer EC2 instance type"
+    Type: "String"
+    Default: "t2.micro"
+    AllowedValues:
+    - t2.nano
+    - t2.micro
+    ConstraintDescription: "must be a valid EC2 instance type."
+
+Mappings:
+  AWSInstanceType2Arch:
+    t2.nano:
+      Arch: HVM64
+    t2.micro:
+      Arch: HVM64
+      
+  AWSInstanceType2NATArch:
+    t2.nano:
+      Arch: NATHVM64
+    t2.micro:
+      Arch: NATHVM64
+
+  AWSRegionArch2AMI:
+    us-east-1:
+      HVM64: ami-a4c7edb2
+
+Resources:
+
+  MyVPC:
+    Type: "AWS::EC2::VPC"
+    Properties: 
+      CidrBlock: 172.31.0.0/16
+      EnableDnsSupport: True
+      EnableDnsHostnames: False
+      Tags:
+        - 
+          Key: Name
+          Value: CF VPC
+        - 
+          Key: CFTemplate
+          Value: 20170721
+
+
+  MyInternetGateway:
+    Type: "AWS::EC2::InternetGateway"
+    Properties:
+      Tags:
+        - 
+          Key: Name
+          Value: CF IGW
+        - 
+          Key: CFTemplate
+          Value: 20170721
+
+
+  ## http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ec2-vpc-gateway-attachment.html
+  MyGatewayAttachment:
+    Type: "AWS::EC2::VPCGatewayAttachment"
+    DependsOn:
+    - MyVPC
+    - MyInternetGateway
+    Properties: 
+      VpcId: !Ref MyVPC
+      InternetGatewayId: !Ref MyInternetGateway
+
+### ============================================= Subnets =============================================
+  MyPublicSubnet:
+    Type: "AWS::EC2::Subnet"
+    Properties: 
+      AvailabilityZone: "us-east-1a"
+      CidrBlock: 172.31.1.0/24
+      MapPublicIpOnLaunch: True
+      Tags:
+        - 
+          Key: Name
+          Value: CF Public Subnet
+        - 
+          Key: CFTemplate
+          Value: 20170721
+
+      VpcId:
+        Ref: MyVPC
+
+  MyPrivateSubnet:
+    Type: "AWS::EC2::Subnet"
+    Properties: 
+      AvailabilityZone: "us-east-1a"
+      CidrBlock: 172.31.0.0/24
+      MapPublicIpOnLaunch: False
+      Tags:
+        - 
+          Key: Name
+          Value: CF Private Subnet
+        - 
+          Key: CFTemplate
+          Value: 20170721
+
+      VpcId:
+        Ref: MyVPC
+### ============================================= Subnets =============================================
+
+  MyPublicRouteTable:
+    DependsOn:
+    - MyPublicSubnet
+    - MyVPC
+    Type: "AWS::EC2::RouteTable"
+    Properties: 
+      VpcId: !Ref MyVPC
+      Tags:
+        - 
+          Key: Name
+          Value: CF Public Route Table
+        -
+          Key: CFTemplate
+          Value: 20170721
+
+  MyPublicIGWRoute:
+    Type: AWS::EC2::Route
+    Properties: 
+      RouteTableId:
+        Ref: MyPublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId:
+        Ref: MyInternetGateway
+
+
+  MyPrivateRouteTable:
+    DependsOn:
+    - MyPrivateSubnet
+    - MyVPC
+    Type: "AWS::EC2::RouteTable"
+    Properties: 
+      VpcId: !Ref MyVPC
+      Tags:
+        - 
+          Key: Name
+          Value: CF Private Route Table
+        -
+          Key: CFTemplate
+          Value: 20170721
+
+  ## http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ec2-natgateway.html
+  MyNatGateway:
+    DependsOn: MyGatewayAttachment
+    Type: AWS::EC2::NatGateway
+    Properties: 
+      AllocationId: 
+        Fn::GetAtt:
+        - MyEIP
+        - AllocationId
+      SubnetId: 
+        Ref: MyPublicSubnet
+
+  MyEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  MyPrivateNatRoute:
+    Type: AWS::EC2::Route
+    Properties: 
+      RouteTableId:
+        Ref: MyPrivateRouteTable
+      NatGatewayId:
+        Ref: MyNatGateway
+      DestinationCidrBlock: 0.0.0.0/0
+  
+
+
+  ## http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ec2-subnet-route-table-assoc.html
+  PublicSubnetRouteTableAssociation:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties: 
+      RouteTableId: !Ref MyPublicRouteTable
+      SubnetId: !Ref MyPublicSubnet
+
+  PrivateSubnetRouteTableAssociation:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties: 
+      RouteTableId: !Ref MyPrivateRouteTable
+      SubnetId: !Ref MyPrivateSubnet
+
+### ============================================= EC2s =============================================
+  Ec2SecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties: 
+      GroupName: CfRemotingAccess
+      GroupDescription: Allow remoting access
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp: 0.0.0.0/0
+      Tags:
+        - 
+          Key: CFTemplate
+          Value: 20170721
+      VpcId:
+        Ref: MyVPC
+
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+        ImageId: !FindInMap [ AWSRegionArch2AMI, !Ref 'AWS::Region' , !FindInMap [ AWSInstanceType2Arch, !Ref InstanceType, Arch ] ]
+        SecurityGroupIds:
+        - !Ref Ec2SecurityGroup
+        SubnetId: !Ref MyPublicSubnet
+        KeyName: !Ref KeyName
+        InstanceType: !Ref InstanceType
+        BlockDeviceMappings:
+        -
+          DeviceName: /dev/xvda
+#          DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 20
+        -
+          DeviceName: /dev/sdb
+          Ebs:
+            VolumeSize: 10
+        Tags:
+          - 
+            Key: Name
+            Value: CF EC2
+          - 
+            Key: CFTemplate
+            Value: 20170721
+
+        UserData:
+          Fn::Base64: !Sub |     # No more Fn::Join needed
+            #!/bin/bash
+            # echo "Testing Userdata" > ${FilePath}
+            # chown ec2-user.ec2-user ${FilePath}
+            # sudo yum install nodejs npm --enablerepo=epel
+            ## Ideally the line below would be enough...
+            ## sudo yum -y install npm nodejs
+            ## https://stackoverflow.com/questions/27350634/how-to-yum-install-node-js-on-amazon-linux
+            #
+
+            # sudo curl --silent --location https://rpm.nodesource.com/setup_6.x | sudo bash -
+            curl --silent --location https://rpm.nodesource.com/setup_6.x | bash -
+            sudo yum install -y nodejs
+
+            mkdir lambdaTestFunction
+            cd lambdaTestFunction
+            npm install --prefix=/lambdaTestFunction aws-sdk
+            npm install --prefix=/lambdaTestFunction phantomjs-prebuilt
+            npm install --prefix=/lambdaTestFunction nodemailer
+            # https://developer.amazon.com/blogs/post/Tx213D2XQIYH864/Announcing-the-Alexa-Skills-Kit-for-Node-js
+            npm install --prefix=/lambdaTestFunction --save alexa-sdk
+
+            npm install lib.cli -g
+            ls node_modules
+            echo 'var AWS = require("aws-sdk");console.log(AWS.EC2.apiVersions)'> test.js
+            node test.js
+
+            #!/bin/bash
+            LOCATION=$1
+            sudo mkdir $LOCATION
+            sudo chmod 777 $LOCATION
+            sudo chown ec2-user:ec2-user $LOCATION
+            # curl http://169.254.169.254/latest/user-data/
+            chmod 777 new-su-dir.sh
+            # [ec2-user@ip-172-31-1-62 ~]$ alias newsudir='bash ~/new-su-dir.sh '
+            # https://aws.amazon.com/blogs/compute/running-executables-in-aws-lambda/
+            # process.env[‘PATH’] = process.env[‘PATH’] + ‘:’ + process.env[‘LAMBDA_TASK_ROOT’]
+
+            # building
+            sudo yum update
+            sudo yum -y install gcc44 gcc-c++ libgcc44 cmake
+            wget http://nodejs.org/dist/latest-v6.x/node-v6.11.1-linux-x64.tar.gz
+            tar -zxvf node-v6.11.1-linux-x64.tar.gz
+            cd node-v6.11.1-linux-x64/lib/node_modules/npm/ & configure & make
+            sudo make install
+
+            curl -O https://bootstrap.pypa.io/get-pip.py
+            python get-pip.py --user
+            sudo pip install --upgrade pip
+            cd ~
+            sudo echo 'export PATH=~/.local/bin:$PATH' >> .bash_profile
+            source ~/.bash_profile
+            pip --version
+
+            pip install awscli --upgrade --user
+            aws --version
+
+            aws configure set aws_access_key_id ${AwsKey} --profile s3-user
+            aws configure set aws_secret_access_key ${AwsSecretKey} --profile s3-user
+            aws configure set region ${AwsRegion} --profile s3-user
+
+            aws s3 cp s3://${S3Bucket}/lambdaTestFunction --recursive --profile s3-user
+
+            zip -r deployment.zip node_modules *.js
+
+            ### Upload the files back to S3
+            # aws s3 cp /lambdaTestFunction/phantom.js s3://${S3Bucket}/ --exclude "*" --include "*.js" --profile s3-user
+            # aws s3 cp /lambdaTestFunction/phantomjs-script.js s3://${S3Bucket}/ --exclude "*" --include "*.js" --profile s3-user
+            # aws s3 cp /lambdaTestFunction/rasterize.js s3://${S3Bucket}/ --exclude "*" --include "*.js" --profile s3-user
+            # aws s3 cp /lambdaTestFunction/index.js s3://${S3Bucket}/ --exclude "*" --include "*.js" --profile s3-user
+            # aws s3 cp /lambdaTestFunction/ s3://${S3Bucket}/ --exclude "node_modules/*" --include "*.js" --profile s3-user
+            # aws s3 ls s3://${S3Bucket}/ --profile s3-user
+
+            # aws s3 cp /lambdaTestFunction/deployment.zip s3://${S3Bucket}/ --profile s3-user
+
+### ============================================= EC2s =============================================
+
+Outputs:
+  InstanceId:
+    Description: InstanceId of the newly created EC2 instance
+    Value: !Ref EC2Instance
+...
